@@ -1,0 +1,6 @@
+Revenue Growth % =
+DIVIDE(
+    [Current Revenue] - [Prior Revenue],
+    [Prior Revenue],
+    0
+)
