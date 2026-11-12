@@ -1,0 +1,174 @@
+// =====================================================================
+// Executive KPI Dashboard - DAX Measures
+//
+//
+//   FactRevenue   [PolicyID, DateKey, AgentKey, CarrierKey, ProductKey,
+//                  Revenue, RevenueType]      -- RevenueType = "New" | "Renewal"
+//   FactApps      [PolicyID, DateKey, AgentKey, CarrierKey, ProductKey,
+//                  AppStatus]                 -- "Submitted" | "Approved" | "Declined"
+//   FactPolicies  [PolicyID, DateKey, AgentKey, PolicyStatus, EffectiveDate,
+//                  TermDate]                  -- snapshot of in-force policies
+//   DimDate       [DateKey, Date, Year, MonthNum, MonthName]  -- marked as Date table
+//   DimAgent      [AgentKey, NPN, AgentName, IsActive]
+//   DimCarrier    [CarrierKey, CarrierName, CarrierGroup]
+//   DimProduct    [ProductKey, ProductName, ProductCategory]
+// =====================================================================
+
+
+// ---------------------------------------------------------------------
+// 1. TOTAL REVENUE
+// ---------------------------------------------------------------------
+Total Revenue = SUM ( FactRevenue[Revenue] )
+
+Total Revenue PY =
+CALCULATE ( [Total Revenue], SAMEPERIODLASTYEAR ( DimDate[Date] ) )
+
+Total Revenue YoY % =
+DIVIDE ( [Total Revenue] - [Total Revenue PY], [Total Revenue PY] )
+
+
+// ---------------------------------------------------------------------
+// 2. NEW BUSINESS REVENUE
+// ---------------------------------------------------------------------
+New Business Revenue =
+CALCULATE ( [Total Revenue], FactRevenue[RevenueType] = "New" )
+
+New Business Revenue PY =
+CALCULATE ( [New Business Revenue], SAMEPERIODLASTYEAR ( DimDate[Date] ) )
+
+New Business Revenue YoY % =
+DIVIDE ( [New Business Revenue] - [New Business Revenue PY], [New Business Revenue PY] )
+
+
+// ---------------------------------------------------------------------
+// 3. RENEWAL REVENUE
+// ---------------------------------------------------------------------
+Renewal Revenue =
+CALCULATE ( [Total Revenue], FactRevenue[RevenueType] = "Renewal" )
+
+Renewal Revenue PY =
+CALCULATE ( [Renewal Revenue], SAMEPERIODLASTYEAR ( DimDate[Date] ) )
+
+Renewal Revenue YoY % =
+DIVIDE ( [Renewal Revenue] - [Renewal Revenue PY], [Renewal Revenue PY] )
+
+New Business Mix % =
+DIVIDE ( [New Business Revenue], [Total Revenue] )      // donut: "38% New"
+
+
+// ---------------------------------------------------------------------
+// 4. NEW APPS  (distinct policies, not rows)
+// ---------------------------------------------------------------------
+New Apps = DISTINCTCOUNT ( FactApps[PolicyID] )
+
+New Apps PY =
+CALCULATE ( [New Apps], SAMEPERIODLASTYEAR ( DimDate[Date] ) )
+
+New Apps YoY % =
+DIVIDE ( [New Apps] - [New Apps PY], [New Apps PY] )
+
+// Cumulative line chart (CY vs PY)
+New Apps YTD = TOTALYTD ( [New Apps], DimDate[Date] )
+
+New Apps PY YTD =
+CALCULATE ( [New Apps YTD], SAMEPERIODLASTYEAR ( DimDate[Date] ) )
+
+
+// ---------------------------------------------------------------------
+// 5. APPROVAL RATE
+// ---------------------------------------------------------------------
+Submitted Apps =
+CALCULATE ( DISTINCTCOUNT ( FactApps[PolicyID] ),
+            FactApps[AppStatus] IN { "Submitted", "Approved", "Declined" } )
+
+Approved Apps =
+CALCULATE ( DISTINCTCOUNT ( FactApps[PolicyID] ), FactApps[AppStatus] = "Approved" )
+
+Approval Rate % = DIVIDE ( [Approved Apps], [Submitted Apps] )
+
+Approval Rate PY % =
+CALCULATE ( [Approval Rate %], SAMEPERIODLASTYEAR ( DimDate[Date] ) )
+
+Approval Rate Delta (pts) = [Approval Rate %] - [Approval Rate PY %]
+
+
+// ---------------------------------------------------------------------
+// 6. RETENTION RATE  (policies in force at period start still in force at end)
+// ---------------------------------------------------------------------
+Policies In Force Start =
+VAR StartDate = MIN ( DimDate[Date] )
+RETURN
+    CALCULATE (
+        DISTINCTCOUNT ( FactPolicies[PolicyID] ),
+        FILTER (
+            ALL ( DimDate ),
+            FactPolicies[EffectiveDate] < StartDate
+                && ( ISBLANK ( FactPolicies[TermDate] ) || FactPolicies[TermDate] >= StartDate )
+        )
+    )
+
+Policies Retained =
+VAR StartDate = MIN ( DimDate[Date] )
+VAR EndDate   = MAX ( DimDate[Date] )
+RETURN
+    CALCULATE (
+        DISTINCTCOUNT ( FactPolicies[PolicyID] ),
+        FILTER (
+            ALL ( DimDate ),
+            FactPolicies[EffectiveDate] < StartDate
+                && ( ISBLANK ( FactPolicies[TermDate] ) || FactPolicies[TermDate] > EndDate )
+        )
+    )
+
+Retention Rate % = DIVIDE ( [Policies Retained], [Policies In Force Start] )
+
+Retention Rate PY % =
+CALCULATE ( [Retention Rate %], SAMEPERIODLASTYEAR ( DimDate[Date] ) )
+
+Retention Rate Delta (pts) = [Retention Rate %] - [Retention Rate PY %]
+
+
+// ---------------------------------------------------------------------
+// 7. REVENUE PER ACTIVE AGENT
+// ---------------------------------------------------------------------
+Active Agents =
+CALCULATE (
+    DISTINCTCOUNT ( FactRevenue[AgentKey] ),
+    FactRevenue[Revenue] > 0
+)
+
+Revenue per Active Agent = DIVIDE ( [Total Revenue], [Active Agents] )
+
+Revenue per Active Agent PY =
+CALCULATE ( [Revenue per Active Agent], SAMEPERIODLASTYEAR ( DimDate[Date] ) )
+
+Revenue per Active Agent YoY % =
+DIVIDE ( [Revenue per Active Agent] - [Revenue per Active Agent PY],
+         [Revenue per Active Agent PY] )
+
+
+// ---------------------------------------------------------------------
+// 8. CHART SUPPORT MEASURES
+// ---------------------------------------------------------------------
+// Revenue by Carrier Group bar -> use DimCarrier[CarrierGroup] on axis, [Total Revenue] as value
+// New Apps by Product bar      -> use DimProduct[ProductCategory] on axis, [New Apps] as value
+// Monthly stacked column       -> DimDate[MonthName] axis, [Renewal Revenue] + [New Business Revenue],
+//                                 line = [Total Revenue PY]
+
+Carrier Revenue Share % =
+DIVIDE ( [Total Revenue], CALCULATE ( [Total Revenue], ALL ( DimCarrier ) ) )
+
+
+// ---------------------------------------------------------------------
+// 9. KPI CARD HELPERS (formatted text + conditional-format color)
+// ---------------------------------------------------------------------
+Total Revenue Label =
+VAR v = [Total Revenue]
+RETURN "$" & FORMAT ( v / 1000000, "#,0.0" ) & "M"
+
+YoY Arrow =
+VAR d = [Total Revenue YoY %]
+RETURN IF ( d >= 0, "▲ ", "▼ " ) & FORMAT ( ABS ( d ), "0.0%" ) & " vs PY"
+
+YoY Color =
+IF ( [Total Revenue YoY %] >= 0, "#34D399", "#F87171" )   // use in Format > Font color > Field value
